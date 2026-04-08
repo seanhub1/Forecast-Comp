@@ -262,14 +262,16 @@ def fetch_ercot_wind_by_region(cache_time):
 
 @st.cache_data(ttl=7300)
 def fetch_ercot_system_wind_forecast(cache_time):
-    """Fetch ERCOT 7-day total system wind forecast (NP4-732)."""
+    """Derive ERCOT 7-day system wind forecast from NP4-742 geo data (STWPFSystemWide column)."""
+    # This is a thin wrapper — the actual data comes from fetch_ercot_wind_by_region (NP4-742)
+    # which already contains STWPFSystemWide. We re-fetch here to keep caching independent.
     auths = ercot_token()
     if not auths:
         return None, None
     today = datetime.today()
     dateStart = today.strftime("%Y-%m-%d")
     dateEnd = (today + timedelta(days=7)).strftime("%Y-%m-%d")
-    url = f"https://api.ercot.com/api/public-reports/np4-732-cd/wpp_hrly_avrg_actl_fcast?deliveryDateFrom={dateStart}&deliveryDateTo={dateEnd}"
+    url = f"https://api.ercot.com/api/public-reports/np4-742-cd/wpp_hrly_actual_fcast_geo?deliveryDateFrom={dateStart}&deliveryDateTo={dateEnd}"
     try:
         response = requests.get(url, headers=auths, timeout=(60, 120))
         if response.ok:
@@ -288,19 +290,12 @@ def fetch_ercot_system_wind_forecast(cache_time):
                     df = df.sort_values('postedDatetime', ascending=False)
                     df = df.drop_duplicates(subset=['deliveryDate', 'HE'], keep='first')
                     df = df.sort_values(['deliveryDate', 'HE'])
-                # Use systemWide forecast column
-                for col in ['systemWideForecast', 'systemWide']:
-                    if col in df.columns:
-                        df['value'] = pd.to_numeric(df[col], errors='coerce')
-                        break
+                # Use STWPFSystemWide — the ERCOT system-wide wind forecast column
+                if 'STWPFSystemWide' in df.columns:
+                    df['value'] = pd.to_numeric(df['STWPFSystemWide'], errors='coerce')
+                    return df, cache_time
                 else:
-                    # Fallback: look for any forecast column
-                    fcst_cols = [c for c in df.columns if 'forecast' in c.lower() or 'systemwide' in c.lower()]
-                    if fcst_cols:
-                        df['value'] = pd.to_numeric(df[fcst_cols[0]], errors='coerce')
-                    else:
-                        return None, None
-                return df, cache_time
+                    logging.warning(f"ERCOT wind NP4-742 columns: {list(df.columns)}")
         return None, None
     except Exception as e:
         st.error(f"Error fetching ERCOT system wind forecast: {str(e)}")
@@ -308,14 +303,14 @@ def fetch_ercot_system_wind_forecast(cache_time):
 
 @st.cache_data(ttl=7300)
 def fetch_ercot_system_solar_forecast(cache_time):
-    """Fetch ERCOT 7-day total system solar forecast (NP4-737)."""
+    """Fetch ERCOT 7-day system solar forecast from NP4-745 geo (STPPFSystemWide column)."""
     auths = ercot_token()
     if not auths:
         return None, None
     today = datetime.today()
     dateStart = today.strftime("%Y-%m-%d")
     dateEnd = (today + timedelta(days=7)).strftime("%Y-%m-%d")
-    url = f"https://api.ercot.com/api/public-reports/np4-737-cd/spp_hrly_avrg_actl_fcast?deliveryDateFrom={dateStart}&deliveryDateTo={dateEnd}"
+    url = f"https://api.ercot.com/api/public-reports/np4-745-cd/spp_hrly_actual_fcast_geo?deliveryDateFrom={dateStart}&deliveryDateTo={dateEnd}"
     try:
         response = requests.get(url, headers=auths, timeout=(60, 120))
         if response.ok:
@@ -334,18 +329,12 @@ def fetch_ercot_system_solar_forecast(cache_time):
                     df = df.sort_values('postedDatetime', ascending=False)
                     df = df.drop_duplicates(subset=['deliveryDate', 'HE'], keep='first')
                     df = df.sort_values(['deliveryDate', 'HE'])
-                # Use systemWide forecast column
-                for col in ['systemWideForecast', 'systemWide']:
-                    if col in df.columns:
-                        df['value'] = pd.to_numeric(df[col], errors='coerce')
-                        break
+                # Use STPPFSystemWide — the ERCOT system-wide solar forecast column
+                if 'STPPFSystemWide' in df.columns:
+                    df['value'] = pd.to_numeric(df['STPPFSystemWide'], errors='coerce')
+                    return df, cache_time
                 else:
-                    fcst_cols = [c for c in df.columns if 'forecast' in c.lower() or 'systemwide' in c.lower()]
-                    if fcst_cols:
-                        df['value'] = pd.to_numeric(df[fcst_cols[0]], errors='coerce')
-                    else:
-                        return None, None
-                return df, cache_time
+                    logging.warning(f"ERCOT solar NP4-745 columns: {list(df.columns)}")
         return None, None
     except Exception as e:
         st.error(f"Error fetching ERCOT system solar forecast: {str(e)}")
@@ -2406,10 +2395,7 @@ def main():
                         ercot_wind_avgs.append(onpeak['value'].mean() if not onpeak.empty else 0)
                     ercot_wind_min_pk = min(ercot_wind_avgs) if ercot_wind_avgs else 0
                     ercot_wind_max_pk = max(ercot_wind_avgs) if ercot_wind_avgs else 1
-                    st.markdown("<div style='display: flex; justify-content: space-around; margin-bottom: 5px;'>" +
-                                "".join([f"<div style='text-align: center; flex: 1; font-size: 11px; color: #888888;'>{pd.to_datetime(d).strftime('%a')}</div>" for d in ercot_wind_dates]) +
-                                "</div>", unsafe_allow_html=True)
-                    cols = st.columns(len(ercot_wind_dates))
+                    cols = st.columns(14)
                     for idx, date in enumerate(ercot_wind_dates):
                         date_obj = pd.to_datetime(date)
                         peak_wind = ercot_wind_avgs[idx]
@@ -2428,7 +2414,7 @@ def main():
                         delta = ercot_wind_avgs[idx] - cached_value if cached_value is not None else None
                         ercot_wind_deltas.append(delta)
                     st.markdown("<div style='font-size: 12px; font-weight: bold; margin-top: 5px;'>Delta (Current - Historical):</div>", unsafe_allow_html=True)
-                    cols = st.columns(len(ercot_wind_dates))
+                    cols = st.columns(14)
                     for idx, delta in enumerate(ercot_wind_deltas):
                         with cols[idx]:
                             if delta is not None:
@@ -2441,6 +2427,8 @@ def main():
                                 st.markdown("<div style='text-align: center; padding: 5px 3px; font-size: 12px;'>N/A</div>", unsafe_allow_html=True)
                 else:
                     st.markdown("<div style='font-size: 12px; color: #888888;'>No ERCOT system wind data available</div>", unsafe_allow_html=True)
+                    with st.expander("Debug: ERCOT Wind API"):
+                        st.write("ercot_sys_wind_df is None or empty")
                 st.markdown("---")
 
 
@@ -2486,10 +2474,7 @@ def main():
                                          for d in ercot_solar_dates]
                     ercot_solar_min_pk = min(ercot_solar_peaks) if ercot_solar_peaks else 0
                     ercot_solar_max_pk = max(ercot_solar_peaks) if ercot_solar_peaks else 1
-                    st.markdown("<div style='display: flex; justify-content: space-around; margin-bottom: 5px;'>" +
-                                "".join([f"<div style='text-align: center; flex: 1; font-size: 11px; color: #888888;'>{pd.to_datetime(d).strftime('%a')}</div>" for d in ercot_solar_dates]) +
-                                "</div>", unsafe_allow_html=True)
-                    cols = st.columns(len(ercot_solar_dates))
+                    cols = st.columns(14)
                     for idx, date in enumerate(ercot_solar_dates):
                         date_obj = pd.to_datetime(date)
                         peak_solar = ercot_solar_peaks[idx]
@@ -2508,7 +2493,7 @@ def main():
                         delta = ercot_solar_peaks[idx] - cached_value if cached_value is not None else None
                         ercot_solar_deltas.append(delta)
                     st.markdown("<div style='font-size: 12px; font-weight: bold; margin-top: 5px;'>Delta (Current - Historical):</div>", unsafe_allow_html=True)
-                    cols = st.columns(len(ercot_solar_dates))
+                    cols = st.columns(14)
                     for idx, delta in enumerate(ercot_solar_deltas):
                         with cols[idx]:
                             if delta is not None:
@@ -2521,6 +2506,8 @@ def main():
                                 st.markdown("<div style='text-align: center; padding: 5px 3px; font-size: 12px;'>N/A</div>", unsafe_allow_html=True)
                 else:
                     st.markdown("<div style='font-size: 12px; color: #888888;'>No ERCOT system solar data available</div>", unsafe_allow_html=True)
+                    with st.expander("Debug: ERCOT Solar API"):
+                        st.write("ercot_sys_solar_df is None or empty")
 
                 st.markdown("<hr style='border: none; border-top: 3px solid white; margin: 20px 0;'>", unsafe_allow_html=True)
                 st.markdown("### Outages")
