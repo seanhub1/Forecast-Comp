@@ -2813,220 +2813,244 @@ def main():
 
 
         with tab2:
-            st.header("Forecast Comparison — Meteologica vs ERCOT")
+            st.header("Forecast Comparison")
 
-            compare_sub = st.radio("", ["Wind", "Solar", "Load"], horizontal=True, key="compare_sub")
-
-            # Regional mappings: { display_name: (meteo_region_key, ercot_column_name) }
-            wind_region_map = {
-                'System Wide': ('__system__', 'STWPFSystemWide'),
-                'Coastal': ('Coastal', 'STWPFCoastal'),
-                'Panhandle': ('Panhandle', 'STWPFPanhandle'),
-                'South': ('South', 'STWPFSouth'),
-                'West': ('West', 'STWPFWest'),
-                'North': ('North', 'STWPFNorth'),
+            # ---- Region configs ----
+            wind_compare_regions = {
+                'Coastal':    ('Coastal',    'STWPFCoastal'),
+                'Panhandle':  ('Panhandle',  'STWPFPanhandle'),
+                'South':      ('South',      'STWPFSouth'),
+                'West':       ('West',       'STWPFWest'),
+                'North':      ('North',      'STWPFNorth'),
             }
-            solar_region_map = {
-                'System Wide': ('__system__', 'STPPFSystemWide'),
+            solar_compare_regions = {
                 'CenterWest': ('CenterWest', 'STPPFCenterWest'),
                 'CenterEast': ('CenterEast', 'STPPFCenterEast'),
-                'FarWest': ('FarWest', 'STPPFFarWest'),
-                'FarEast': ('FarEast', 'STPPFFarEast'),
-                'NorthWest': ('NorthWest', 'STPPFNorthWest'),
-                'SouthEast': ('SouthEast', 'STPPFSouthEast'),
+                'FarWest':    ('FarWest',    'STPPFFarWest'),
+                'FarEast':    ('FarEast',    'STPPFFarEast'),
+                'NorthWest':  ('NorthWest',  'STPPFNorthWest'),
+                'SouthEast':  ('SouthEast',  'STPPFSouthEast'),
             }
-            load_region_map = {
-                'System Wide': ('__system__', '__system__'),
-                'Coast': ('Coast', None),
-                'East': ('East', None),
-                'FarWest': ('FarWest', None),
-                'North': ('North', None),
+            load_compare_regions = {
+                'Coast':        ('Coast',        None),
+                'East':         ('East',         None),
+                'FarWest':      ('FarWest',      None),
+                'North':        ('North',        None),
                 'NorthCentral': ('NorthCentral', None),
                 'SouthCentral': ('SouthCentral', None),
-                'Southern': ('Southern', None),
-                'West': ('West', None),
+                'Southern':     ('Southern',     None),
+                'West':         ('West',         None),
             }
 
-            if compare_sub == "Wind":
-                region_map = wind_region_map
-                ercot_geo_df = wind_regional_df  # NP4-742
-                meteo_sys_df = met_wind_df
-                meteo_regional = met_regional.get('wind', {})
-            elif compare_sub == "Solar":
-                region_map = solar_region_map
-                ercot_geo_df = ercot_sys_solar_df  # NP4-745 (has all geo columns)
-                meteo_sys_df = met_solar_df
-                meteo_regional = met_regional.get('solar', {})
-            else:
-                region_map = load_region_map
-                ercot_geo_df = df  # NP3-565 load forecast
-                meteo_sys_df = met_load_df
-                meteo_regional = met_regional.get('load', {})
+            def get_onpk_avg(rdf, date):
+                if rdf is None or rdf.empty:
+                    return None
+                op = rdf[(rdf['deliveryDate'] == date) & (rdf['HE'] >= 7) & (rdf['HE'] <= 22)]
+                return float(op['value'].mean()) if not op.empty else None
 
-            region_names = list(region_map.keys())
-            selected_region = st.selectbox("Region", region_names, key="compare_region")
-            met_key, ercot_col = region_map[selected_region]
+            def get_ercot_onpk_avg(geo_df, col, date):
+                if geo_df is None or geo_df.empty or col not in geo_df.columns:
+                    return None
+                op = geo_df[(geo_df['deliveryDate'] == date) & (geo_df['HE'] >= 7) & (geo_df['HE'] <= 22)]
+                vals = pd.to_numeric(op[col], errors='coerce').dropna()
+                return float(vals.mean()) if not vals.empty else None
 
-            # Get Meteo data for this region
-            if met_key == '__system__':
-                meteo_df = meteo_sys_df
-            else:
-                meteo_df = meteo_regional.get(met_key)
+            def get_compare_dates(meteo_dict, ercot_geo_df, region_map):
+                all_dates = None
+                for rname, (met_key, ecol) in region_map.items():
+                    mdf = meteo_dict.get(met_key)
+                    if mdf is not None and not mdf.empty:
+                        rd = set(mdf['deliveryDate'].unique())
+                        all_dates = rd if all_dates is None else all_dates & rd
+                if all_dates is None:
+                    all_dates = set()
+                if ercot_geo_df is not None and not ercot_geo_df.empty:
+                    all_dates = all_dates & set(ercot_geo_df['deliveryDate'].unique())
+                return sorted(all_dates)[:7]
 
-            # Get ERCOT data for this region
-            ercot_hourly = None
-            if compare_sub == "Load":
-                if selected_region == 'System Wide' and df is not None and not df.empty:
-                    ercot_hourly = df[['deliveryDate', 'HE', 'systemTotal']].copy()
-                    ercot_hourly = ercot_hourly.rename(columns={'systemTotal': 'ercot_val'})
-                    ercot_hourly['ercot_val'] = pd.to_numeric(ercot_hourly['ercot_val'], errors='coerce')
-                # Regional ERCOT load not available from NP3-565 in same format — show Meteo only
-            elif ercot_geo_df is not None and not ercot_geo_df.empty and ercot_col and ercot_col in ercot_geo_df.columns:
-                ercot_hourly = ercot_geo_df[['deliveryDate', 'HE', ercot_col]].copy()
-                ercot_hourly = ercot_hourly.rename(columns={ercot_col: 'ercot_val'})
-                ercot_hourly['ercot_val'] = pd.to_numeric(ercot_hourly['ercot_val'], errors='coerce')
-
-            has_meteo = meteo_df is not None and not meteo_df.empty
-            has_ercot = ercot_hourly is not None and not ercot_hourly.empty
-
-            if not has_meteo and not has_ercot:
-                st.warning(f"No data available for {selected_region}")
-            else:
-                # Find common dates
-                meteo_dates = set(meteo_df['deliveryDate'].unique()) if has_meteo else set()
-                ercot_dates = set(ercot_hourly['deliveryDate'].unique()) if has_ercot else set()
-                if has_meteo and has_ercot:
-                    avail_dates = sorted(meteo_dates & ercot_dates)[:7]
-                elif has_meteo:
-                    avail_dates = sorted(meteo_dates)[:7]
+            def render_compare_section(title, region_map, meteo_dict, ercot_geo_df, session_prefix):
+                st.markdown(f"### {title}")
+                # For load with no ERCOT geo, use meteo dates only
+                has_ercot_geo = ercot_geo_df is not None and not ercot_geo_df.empty
+                if has_ercot_geo:
+                    dates = get_compare_dates(meteo_dict, ercot_geo_df, region_map)
                 else:
-                    avail_dates = sorted(ercot_dates)[:7]
+                    all_dates = None
+                    for rname, (met_key, ecol) in region_map.items():
+                        mdf = meteo_dict.get(met_key)
+                        if mdf is not None and not mdf.empty:
+                            rd = set(mdf['deliveryDate'].unique())
+                            all_dates = rd if all_dates is None else all_dates & rd
+                    dates = sorted(all_dates)[:7] if all_dates else []
 
-                if not avail_dates:
-                    st.warning("No overlapping dates available")
-                else:
-                    date_labels = [pd.to_datetime(d).strftime('%a %m/%d') for d in avail_dates]
-                    selected_label = st.select_slider("Date", options=date_labels, value=date_labels[0], key="compare_date")
-                    selected_date = avail_dates[date_labels.index(selected_label)]
+                if not dates:
+                    st.warning(f"No data for {title}")
+                    return
 
-                    # Build hourly merged df
-                    merged = pd.DataFrame({'HE': range(1, 25)})
-                    if has_meteo:
-                        m_day = meteo_df[meteo_df['deliveryDate'] == selected_date][['HE', 'value']].copy()
-                        m_day = m_day.rename(columns={'value': 'Meteo'})
-                        merged = merged.merge(m_day, on='HE', how='left')
-                    else:
-                        merged['Meteo'] = None
-                    if has_ercot:
-                        e_day = ercot_hourly[ercot_hourly['deliveryDate'] == selected_date][['HE', 'ercot_val']].copy()
-                        e_day = e_day.rename(columns={'ercot_val': 'ERCOT'})
-                        merged = merged.merge(e_day, on='HE', how='left')
-                    else:
-                        merged['ERCOT'] = None
+                # Date header row
+                cols = st.columns(7)
+                for idx, date in enumerate(dates):
+                    date_obj = pd.to_datetime(date)
+                    with cols[idx]:
+                        if st.button(f"{date_obj.strftime('%a %m/%d')}", key=f"{session_prefix}_dt_{idx}", use_container_width=True):
+                            st.session_state[f'{session_prefix}_popup_date'] = date
+                            st.session_state[f'{session_prefix}_dialog_active'] = True
 
-                    merged['Meteo'] = pd.to_numeric(merged['Meteo'], errors='coerce')
-                    merged['ERCOT'] = pd.to_numeric(merged['ERCOT'], errors='coerce')
-                    merged['Diff'] = merged['ERCOT'] - merged['Meteo']
-                    merged['HE_label'] = merged['HE'].apply(lambda x: f'HE{int(x):02d}')
+                # Region rows
+                for rname, (met_key, ecol) in region_map.items():
+                    mdf = meteo_dict.get(met_key)
 
-                    # --- Overlay chart ---
-                    fig = go.Figure()
-                    if has_meteo:
-                        fig.add_trace(go.Scatter(
-                            x=merged['HE_label'], y=merged['Meteo'],
-                            mode='lines+markers', name='Meteologica',
-                            line=dict(color='#AB47BC', width=2), marker=dict(size=4)
-                        ))
-                    if has_ercot:
-                        fig.add_trace(go.Scatter(
-                            x=merged['HE_label'], y=merged['ERCOT'],
-                            mode='lines+markers', name='ERCOT',
-                            line=dict(color='#42A5F5', width=2), marker=dict(size=4)
-                        ))
-                    fig.update_traces(hovertemplate='%{x}: %{y:,.0f} MW<extra>%{fullData.name}</extra>')
-                    fig.update_layout(
-                        title=f"{compare_sub} — {selected_region} — {selected_label}",
-                        yaxis=dict(title='MW', tickformat=','),
-                        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-                        height=400, hovermode='x unified', margin=dict(t=60, b=40)
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.markdown(f"<div style='font-size: 12px; font-weight: bold; color: #aaa; margin-top: 10px; margin-bottom: 2px;'>{rname}</div>", unsafe_allow_html=True)
+                    cols = st.columns(7)
+                    for idx, date in enumerate(dates):
+                        m_val = get_onpk_avg(mdf, date)
+                        e_val = get_ercot_onpk_avg(ercot_geo_df, ecol, date) if ecol else None
+                        diff = (e_val - m_val) if (e_val is not None and m_val is not None) else None
 
-                    # --- Difference bar chart (only if both sources) ---
-                    if has_meteo and has_ercot:
-                        diff_vals = merged['Diff'].fillna(0)
-                        diff_colors = ['#4CAF50' if v >= 0 else '#FF5252' for v in diff_vals]
-                        fig_diff = go.Figure()
-                        fig_diff.add_trace(go.Bar(
-                            x=merged['HE_label'], y=merged['Diff'],
-                            marker_color=diff_colors,
-                            hovertemplate='%{x}: %{y:+,.0f} MW<extra></extra>'
-                        ))
-                        fig_diff.add_hline(y=0, line_dash="dot", line_color="#666", line_width=1)
-                        fig_diff.update_layout(
-                            title=f"Difference (ERCOT − Meteo)",
-                            yaxis=dict(title='MW', tickformat=','),
-                            height=260, hovermode='x', margin=dict(t=50, b=40), showlegend=False
-                        )
-                        st.plotly_chart(fig_diff, use_container_width=True)
-
-                        # --- Summary metrics ---
-                        valid = merged.dropna(subset=['Meteo', 'ERCOT'])
-                        if not valid.empty:
-                            avg_diff = valid['Diff'].mean()
-                            mae = valid['Diff'].abs().mean()
-                            max_diff = valid['Diff'].max()
-                            min_diff = valid['Diff'].min()
-                            max_he = valid.loc[valid['Diff'].idxmax(), 'HE_label']
-                            min_he = valid.loc[valid['Diff'].idxmin(), 'HE_label']
-                            c1, c2, c3, c4 = st.columns(4)
-                            c1.metric("Avg Diff", f"{avg_diff:+,.0f} MW")
-                            c2.metric("MAE", f"{mae:,.0f} MW")
-                            c3.metric("Max (ERCOT higher)", f"{max_diff:+,.0f} MW", delta=max_he, delta_color="off")
-                            c4.metric("Min (Meteo higher)", f"{min_diff:+,.0f} MW", delta=min_he, delta_color="off")
-                    elif not has_ercot and compare_sub == "Load" and selected_region != 'System Wide':
-                        st.caption("ERCOT regional load forecast not available — showing Meteologica only")
-
-                    # --- 7-Day daily avg overview ---
-                    st.markdown("---")
-                    st.markdown("#### 7-Day Overview")
-                    ov_rows = []
-                    for d in avail_dates:
-                        m_vals = meteo_df[meteo_df['deliveryDate'] == d]['value'] if has_meteo else pd.Series(dtype=float)
-                        m_avg = float(m_vals.mean()) if not m_vals.empty else None
-                        if has_ercot:
-                            e_vals = ercot_hourly[ercot_hourly['deliveryDate'] == d]['ercot_val']
-                            e_avg = float(pd.to_numeric(e_vals, errors='coerce').mean()) if not e_vals.empty else None
+                        e_str = f"{e_val:,.0f}" if e_val is not None else "—"
+                        m_str = f"{m_val:,.0f}" if m_val is not None else "—"
+                        if diff is not None:
+                            dc = "#4CAF50" if diff >= 0 else "#FF5252"
+                            d_str = f"<div style='font-size: 10px; color: {dc}; font-weight: bold;'>{diff:+,.0f}</div>"
                         else:
-                            e_avg = None
-                        ov_rows.append({
-                            'Date': pd.to_datetime(d).strftime('%a %m/%d'),
-                            'Meteo': m_avg, 'ERCOT': e_avg,
-                            'Diff': (e_avg - m_avg) if (e_avg is not None and m_avg is not None) else None
-                        })
-                    ov_df = pd.DataFrame(ov_rows)
+                            d_str = ""
 
-                    fig_ov = go.Figure()
-                    if has_meteo:
-                        fig_ov.add_trace(go.Bar(x=ov_df['Date'], y=ov_df['Meteo'], name='Meteologica', marker_color='#AB47BC', opacity=0.8))
-                    if has_ercot:
-                        fig_ov.add_trace(go.Bar(x=ov_df['Date'], y=ov_df['ERCOT'], name='ERCOT', marker_color='#42A5F5', opacity=0.8))
-                    fig_ov.update_layout(
-                        barmode='group', title=f"Daily Avg — {selected_region}",
-                        yaxis=dict(title='MW', tickformat=','),
-                        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-                        height=320, hovermode='x unified', margin=dict(t=60, b=40)
-                    )
-                    fig_ov.update_traces(hovertemplate='%{x}: %{y:,.0f} MW<extra>%{fullData.name}</extra>')
-                    st.plotly_chart(fig_ov, use_container_width=True)
+                        with cols[idx]:
+                            if has_ercot_geo and ecol:
+                                st.markdown(f"""
+                                    <div style='text-align: center; padding: 5px 2px; background-color: #1a1a2e; border-radius: 6px; border: 1px solid #333;'>
+                                        <div style='font-size: 9px; color: #42A5F5;'>ERCOT</div>
+                                        <div style='font-size: 14px; font-weight: bold; color: #42A5F5;'>{e_str}</div>
+                                        <div style='font-size: 9px; color: #AB47BC; margin-top: 2px;'>Meteo</div>
+                                        <div style='font-size: 14px; font-weight: bold; color: #AB47BC;'>{m_str}</div>
+                                        {d_str}
+                                    </div>
+                                """, unsafe_allow_html=True)
+                            else:
+                                st.markdown(f"""
+                                    <div style='text-align: center; padding: 5px 2px; background-color: #1a1a2e; border-radius: 6px; border: 1px solid #333;'>
+                                        <div style='font-size: 9px; color: #AB47BC;'>Meteo</div>
+                                        <div style='font-size: 14px; font-weight: bold; color: #AB47BC;'>{m_str}</div>
+                                    </div>
+                                """, unsafe_allow_html=True)
 
-                    # --- Data table ---
-                    with st.expander(f"Hourly Data — {selected_label}"):
-                        disp = merged[['HE_label', 'Meteo', 'ERCOT', 'Diff']].copy()
-                        disp.columns = ['Hour', 'Meteologica', 'ERCOT', 'Difference']
-                        for c in ['Meteologica', 'ERCOT', 'Difference']:
-                            disp[c] = disp[c].apply(lambda x: f'{x:+,.0f}' if pd.notna(x) and c == 'Difference' else (f'{x:,.0f}' if pd.notna(x) else ''))
-                        st.dataframe(disp, use_container_width=True, hide_index=True)
+                st.markdown("<hr style='border: none; border-top: 3px solid white; margin: 20px 0;'>", unsafe_allow_html=True)
+
+            # ---- Clean up stale popup states ----
+            for pfx in ['cmp_load', 'cmp_wind', 'cmp_solar']:
+                if f'{pfx}_popup_date' in st.session_state and f'{pfx}_dialog_active' not in st.session_state:
+                    del st.session_state[f'{pfx}_popup_date']
+
+            # ---- Render sections ----
+            render_compare_section(
+                "Load Forecast - Onpeak Avg (HE 7-22)",
+                load_compare_regions, met_regional.get('load', {}), None, 'cmp_load')
+
+            render_compare_section(
+                "Wind Forecast - Onpeak Avg (HE 7-22)",
+                wind_compare_regions, met_regional.get('wind', {}), wind_regional_df, 'cmp_wind')
+
+            render_compare_section(
+                "Solar Forecast - Onpeak Avg (HE 7-22)",
+                solar_compare_regions, met_regional.get('solar', {}), ercot_sys_solar_df, 'cmp_solar')
+
+            # ---- Popup dialogs ----
+            def render_compare_popup(session_prefix, title, region_map, meteo_dict, ercot_geo_df):
+                if f'{session_prefix}_popup_date' not in st.session_state:
+                    return
+
+                @st.dialog(f"{title} — Hourly Comparison", width="large")
+                def show_dialog():
+                    popup_date = st.session_state[f'{session_prefix}_popup_date']
+                    date_obj = pd.to_datetime(popup_date)
+                    st.markdown(f"#### {date_obj.strftime('%A, %B %d, %Y')}")
+
+                    grid_cols = "45px " + " ".join(["1fr"] * 24)
+
+                    # HE header (rendered once)
+                    hdr = f"<div style='display: grid; grid-template-columns: {grid_cols}; gap: 2px; margin-bottom: 2px; font-size: 9px; color: #888; font-weight: bold;'>"
+                    hdr += "<div></div>"
+                    for he in range(1, 25):
+                        hdr += f"<div style='text-align: center;'>{he}</div>"
+                    hdr += "</div>"
+                    st.markdown(hdr, unsafe_allow_html=True)
+
+                    for rname, (met_key, ecol) in region_map.items():
+                        st.markdown(f"<div style='font-size: 13px; font-weight: bold; color: #fafafa; margin-top: 10px; margin-bottom: 4px; border-bottom: 1px solid #444; padding-bottom: 3px;'>{rname}</div>", unsafe_allow_html=True)
+
+                        mdf = meteo_dict.get(met_key)
+                        has_ercot = ecol and ercot_geo_df is not None and not ercot_geo_df.empty and ecol in ercot_geo_df.columns
+
+                        m_hourly = {}
+                        if mdf is not None and not mdf.empty:
+                            m_day = mdf[mdf['deliveryDate'] == popup_date]
+                            for _, row in m_day.iterrows():
+                                m_hourly[int(row['HE'])] = float(row['value'])
+
+                        e_hourly = {}
+                        if has_ercot:
+                            e_day = ercot_geo_df[ercot_geo_df['deliveryDate'] == popup_date]
+                            for _, row in e_day.iterrows():
+                                val = pd.to_numeric(row[ecol], errors='coerce')
+                                if pd.notna(val):
+                                    e_hourly[int(row['HE'])] = float(val)
+
+                        rows_html = ""
+
+                        # ERCOT row
+                        if has_ercot:
+                            rows_html += f"<div style='display: grid; grid-template-columns: {grid_cols}; gap: 2px; margin-bottom: 1px;'>"
+                            rows_html += "<div style='font-size: 9px; color: #42A5F5; font-weight: bold; padding: 3px 0;'>ERCOT</div>"
+                            for he in range(1, 25):
+                                v = e_hourly.get(he)
+                                if v is not None:
+                                    rows_html += f"<div style='background: #1a2744; color: #42A5F5; padding: 3px 1px; border-radius: 3px; text-align: center; font-size: 10px; font-weight: bold;'>{v:,.0f}</div>"
+                                else:
+                                    rows_html += "<div style='background: #222; color: #555; padding: 3px 1px; border-radius: 3px; text-align: center; font-size: 10px;'>—</div>"
+                            rows_html += "</div>"
+
+                        # Meteo row
+                        rows_html += f"<div style='display: grid; grid-template-columns: {grid_cols}; gap: 2px; margin-bottom: 1px;'>"
+                        rows_html += "<div style='font-size: 9px; color: #AB47BC; font-weight: bold; padding: 3px 0;'>Meteo</div>"
+                        for he in range(1, 25):
+                            v = m_hourly.get(he)
+                            if v is not None:
+                                rows_html += f"<div style='background: #2a1a33; color: #AB47BC; padding: 3px 1px; border-radius: 3px; text-align: center; font-size: 10px; font-weight: bold;'>{v:,.0f}</div>"
+                            else:
+                                rows_html += "<div style='background: #222; color: #555; padding: 3px 1px; border-radius: 3px; text-align: center; font-size: 10px;'>—</div>"
+                        rows_html += "</div>"
+
+                        # Diff row
+                        if has_ercot:
+                            rows_html += f"<div style='display: grid; grid-template-columns: {grid_cols}; gap: 2px; margin-bottom: 4px;'>"
+                            rows_html += "<div style='font-size: 9px; color: #888; font-weight: bold; padding: 3px 0;'>Diff</div>"
+                            for he in range(1, 25):
+                                ev = e_hourly.get(he)
+                                mv = m_hourly.get(he)
+                                if ev is not None and mv is not None:
+                                    d = ev - mv
+                                    dc = "#4CAF50" if d >= 0 else "#FF5252"
+                                    rows_html += f"<div style='color: {dc}; padding: 3px 1px; text-align: center; font-size: 10px; font-weight: bold;'>{d:+,.0f}</div>"
+                                else:
+                                    rows_html += "<div style='color: #555; padding: 3px 1px; text-align: center; font-size: 10px;'>—</div>"
+                            rows_html += "</div>"
+
+                        st.markdown(rows_html, unsafe_allow_html=True)
+
+                    st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+                    if st.button("Close", key=f"close_{session_prefix}", type="primary", use_container_width=True):
+                        if f'{session_prefix}_dialog_active' in st.session_state:
+                            del st.session_state[f'{session_prefix}_dialog_active']
+                        del st.session_state[f'{session_prefix}_popup_date']
+                        st.rerun()
+
+                show_dialog()
+                if f'{session_prefix}_dialog_active' in st.session_state:
+                    del st.session_state[f'{session_prefix}_dialog_active']
+
+            render_compare_popup('cmp_load', 'Load', load_compare_regions, met_regional.get('load', {}), None)
+            render_compare_popup('cmp_wind', 'Wind', wind_compare_regions, met_regional.get('wind', {}), wind_regional_df)
+            render_compare_popup('cmp_solar', 'Solar', solar_compare_regions, met_regional.get('solar', {}), ercot_sys_solar_df)
 
 
         with tab3:
