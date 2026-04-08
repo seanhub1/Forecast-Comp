@@ -26,6 +26,28 @@ import numpy as np
 st.set_page_config(page_title="Fundies", layout="wide", initial_sidebar_state="collapsed")
 
 
+def check_password():
+    if st.query_params.get("auth") == "1":
+        return
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    if not st.session_state.authenticated:
+        st.title("Goat Farmers Only")
+        with st.form("login_form"):
+            password = st.text_input("Password:", type="password", key="password_input")
+            submitted = st.form_submit_button("Login", type="primary")
+            if submitted:
+                if password == st.secrets.get("app", {}).get("password", ""):
+                    st.session_state.authenticated = True
+                    st.query_params["auth"] = "1"
+                    st.rerun()
+                else:
+                    st.error("Wrong password")
+        st.stop()
+
+check_password()
+
+
 st.markdown("""
     <style>
     .stApp {
@@ -512,7 +534,7 @@ def get_or_update_historical_cache(met_load_df, met_wind_df, met_solar_df, df, o
             }
             snapshot_captured = True
             st.session_state[session_key] = True
-            st.success(f"📸 Captured HE17 snapshot at {now.strftime('%I:%M %p')} CT")
+            st.success(f" Captured HE17 snapshot at {now.strftime('%I:%M %p')} CT")
     
     # HE01 
     if current_hour == 0:
@@ -528,7 +550,7 @@ def get_or_update_historical_cache(met_load_df, met_wind_df, met_solar_df, df, o
             }
             snapshot_captured = True
             st.session_state[session_key] = True
-            st.success(f"📸 Captured HE01 snapshot at {now.strftime('%I:%M %p')} CT")
+            st.success(f"Captured HE01 snapshot at {now.strftime('%I:%M %p')} CT")
     
     if snapshot_captured:
         if upload_to_gist(cache):
