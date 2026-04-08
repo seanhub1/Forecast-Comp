@@ -260,6 +260,97 @@ def fetch_ercot_wind_by_region(cache_time):
         return None, None
 
 
+@st.cache_data(ttl=7300)
+def fetch_ercot_system_wind_forecast(cache_time):
+    """Fetch ERCOT 7-day total system wind forecast (NP4-732)."""
+    auths = ercot_token()
+    if not auths:
+        return None, None
+    today = datetime.today()
+    dateStart = today.strftime("%Y-%m-%d")
+    dateEnd = (today + timedelta(days=7)).strftime("%Y-%m-%d")
+    url = f"https://api.ercot.com/api/public-reports/np4-732-cd/wpp_hrly_avrg_actl_fcast?deliveryDateFrom={dateStart}&deliveryDateTo={dateEnd}"
+    try:
+        response = requests.get(url, headers=auths, timeout=(60, 120))
+        if response.ok:
+            results = response.json()
+            data = results.get("data", [])
+            fields = [x['name'] for x in results.get("fields", [])]
+            df = pd.DataFrame(data, columns=fields)
+            if not df.empty:
+                df['deliveryDate'] = pd.to_datetime(df['deliveryDate']).dt.date
+                if df['hourEnding'].dtype == 'object':
+                    df['HE'] = df['hourEnding'].str.split(':').str[0].astype(int)
+                else:
+                    df['HE'] = pd.to_numeric(df['hourEnding'], errors='coerce').fillna(0).astype(int)
+                if 'postedDatetime' in df.columns:
+                    df['postedDatetime'] = pd.to_datetime(df['postedDatetime'])
+                    df = df.sort_values('postedDatetime', ascending=False)
+                    df = df.drop_duplicates(subset=['deliveryDate', 'HE'], keep='first')
+                    df = df.sort_values(['deliveryDate', 'HE'])
+                # Use systemWide forecast column
+                for col in ['systemWideForecast', 'systemWide']:
+                    if col in df.columns:
+                        df['value'] = pd.to_numeric(df[col], errors='coerce')
+                        break
+                else:
+                    # Fallback: look for any forecast column
+                    fcst_cols = [c for c in df.columns if 'forecast' in c.lower() or 'systemwide' in c.lower()]
+                    if fcst_cols:
+                        df['value'] = pd.to_numeric(df[fcst_cols[0]], errors='coerce')
+                    else:
+                        return None, None
+                return df, cache_time
+        return None, None
+    except Exception as e:
+        st.error(f"Error fetching ERCOT system wind forecast: {str(e)}")
+        return None, None
+
+@st.cache_data(ttl=7300)
+def fetch_ercot_system_solar_forecast(cache_time):
+    """Fetch ERCOT 7-day total system solar forecast (NP4-737)."""
+    auths = ercot_token()
+    if not auths:
+        return None, None
+    today = datetime.today()
+    dateStart = today.strftime("%Y-%m-%d")
+    dateEnd = (today + timedelta(days=7)).strftime("%Y-%m-%d")
+    url = f"https://api.ercot.com/api/public-reports/np4-737-cd/spp_hrly_avrg_actl_fcast?deliveryDateFrom={dateStart}&deliveryDateTo={dateEnd}"
+    try:
+        response = requests.get(url, headers=auths, timeout=(60, 120))
+        if response.ok:
+            results = response.json()
+            data = results.get("data", [])
+            fields = [x['name'] for x in results.get("fields", [])]
+            df = pd.DataFrame(data, columns=fields)
+            if not df.empty:
+                df['deliveryDate'] = pd.to_datetime(df['deliveryDate']).dt.date
+                if df['hourEnding'].dtype == 'object':
+                    df['HE'] = df['hourEnding'].str.split(':').str[0].astype(int)
+                else:
+                    df['HE'] = pd.to_numeric(df['hourEnding'], errors='coerce').fillna(0).astype(int)
+                if 'postedDatetime' in df.columns:
+                    df['postedDatetime'] = pd.to_datetime(df['postedDatetime'])
+                    df = df.sort_values('postedDatetime', ascending=False)
+                    df = df.drop_duplicates(subset=['deliveryDate', 'HE'], keep='first')
+                    df = df.sort_values(['deliveryDate', 'HE'])
+                # Use systemWide forecast column
+                for col in ['systemWideForecast', 'systemWide']:
+                    if col in df.columns:
+                        df['value'] = pd.to_numeric(df[col], errors='coerce')
+                        break
+                else:
+                    fcst_cols = [c for c in df.columns if 'forecast' in c.lower() or 'systemwide' in c.lower()]
+                    if fcst_cols:
+                        df['value'] = pd.to_numeric(df[fcst_cols[0]], errors='coerce')
+                    else:
+                        return None, None
+                return df, cache_time
+        return None, None
+    except Exception as e:
+        st.error(f"Error fetching ERCOT system solar forecast: {str(e)}")
+        return None, None
+
 region_mapping = {
     'Coastal': 'coastForecast',
     'South': 'southForecast',
@@ -426,7 +517,7 @@ def upload_to_gist(cache_data):
     except Exception:
         return False
 
-def create_snapshot_data(met_load_df, met_wind_df, met_solar_df, df, outage_df):
+def create_snapshot_data(met_load_df, met_wind_df, met_solar_df, df, outage_df, ercot_sys_wind_df=None, ercot_sys_solar_df=None):
     snapshot = {}
 
     if met_load_df is not None and not met_load_df.empty:
@@ -454,6 +545,22 @@ def create_snapshot_data(met_load_df, met_wind_df, met_solar_df, df, outage_df):
         solar_peaks = [float(met_solar_df[met_solar_df['deliveryDate'] == d]['value'].max())
                        for d in solar_dates]
         snapshot['solar'] = {str(d): v for d, v in zip(solar_dates, solar_peaks)}
+
+    if ercot_sys_wind_df is not None and not ercot_sys_wind_df.empty:
+        esw_dates = sorted(ercot_sys_wind_df['deliveryDate'].unique())[:7]
+        esw_avgs = []
+        for date in esw_dates:
+            onpeak = ercot_sys_wind_df[(ercot_sys_wind_df['deliveryDate'] == date) &
+                                        (ercot_sys_wind_df['HE'] >= 7) &
+                                        (ercot_sys_wind_df['HE'] <= 22)]
+            esw_avgs.append(float(onpeak['value'].mean()) if not onpeak.empty else 0)
+        snapshot['ercot_sys_wind'] = {str(d): v for d, v in zip(esw_dates, esw_avgs)}
+
+    if ercot_sys_solar_df is not None and not ercot_sys_solar_df.empty:
+        ess_dates = sorted(ercot_sys_solar_df['deliveryDate'].unique())[:7]
+        ess_peaks = [float(ercot_sys_solar_df[ercot_sys_solar_df['deliveryDate'] == d]['value'].max())
+                     for d in ess_dates]
+        snapshot['ercot_sys_solar'] = {str(d): v for d, v in zip(ess_dates, ess_peaks)}
 
     if outage_df is not None and not outage_df.empty:
         outage_dates = sorted(outage_df['operatingDate'].unique())[:14]
@@ -503,7 +610,7 @@ def create_snapshot_data(met_load_df, met_wind_df, met_solar_df, df, outage_df):
 
     return snapshot
 
-def get_or_update_historical_cache(met_load_df, met_wind_df, met_solar_df, df, outage_df):
+def get_or_update_historical_cache(met_load_df, met_wind_df, met_solar_df, df, outage_df, ercot_sys_wind_df=None, ercot_sys_solar_df=None):
     
     cache = load_historical_cache()
     from zoneinfo import ZoneInfo
@@ -526,7 +633,7 @@ def get_or_update_historical_cache(met_load_df, met_wind_df, met_solar_df, df, o
         session_key = f"he17_captured_{today}"
         if he17_captured_date != str(today) and session_key not in st.session_state:
             # Capture HE17 snapshot
-            snapshot = create_snapshot_data(met_load_df, met_wind_df, met_solar_df, df, outage_df)
+            snapshot = create_snapshot_data(met_load_df, met_wind_df, met_solar_df, df, outage_df, ercot_sys_wind_df, ercot_sys_solar_df)
             cache['HE17_snapshot'] = {
                 'captured_date': str(today),
                 'capture_time': now.isoformat(),
@@ -542,7 +649,7 @@ def get_or_update_historical_cache(met_load_df, met_wind_df, met_solar_df, df, o
         session_key = f"he01_captured_{today}"
         if he01_captured_date != str(today) and session_key not in st.session_state:
             # Capture HE01 snapshot
-            snapshot = create_snapshot_data(met_load_df, met_wind_df, met_solar_df, df, outage_df)
+            snapshot = create_snapshot_data(met_load_df, met_wind_df, met_solar_df, df, outage_df, ercot_sys_wind_df, ercot_sys_solar_df)
             cache['HE01_snapshot'] = {
                 'captured_date': str(today),
                 'capture_time': now.isoformat(),
@@ -1978,9 +2085,15 @@ def main():
 
             wind_regional_result = fetch_ercot_wind_by_region(cache_time)
             wind_regional_df, wind_regional_fetch_time = wind_regional_result if wind_regional_result[0] is not None else (None, cache_time)
+
+            ercot_sys_wind_result = fetch_ercot_system_wind_forecast(cache_time)
+            ercot_sys_wind_df, _ = ercot_sys_wind_result if ercot_sys_wind_result[0] is not None else (None, cache_time)
+
+            ercot_sys_solar_result = fetch_ercot_system_solar_forecast(cache_time)
+            ercot_sys_solar_df, _ = ercot_sys_solar_result if ercot_sys_solar_result[0] is not None else (None, cache_time)
         historical_cache = get_or_update_historical_cache(
             met_load_df, met_wind_df, met_solar_df,
-            df, outage_df)
+            df, outage_df, ercot_sys_wind_df, ercot_sys_solar_df)
 
         raw_cache = load_historical_cache()
         if raw_cache:
@@ -2281,6 +2394,55 @@ def main():
                     if 'wind_region_dialog_active' in st.session_state:
                         del st.session_state['wind_region_dialog_active']
 
+                # ERCOT 7-Day System Wind Forecast
+                st.markdown("<div style='font-size: 14px; font-weight: bold; color: #888888; margin-top: 10px; margin-bottom: 5px;'>ERCOT 7-Day System Wind Forecast - Onpeak (HE 7-22)</div>", unsafe_allow_html=True)
+                if ercot_sys_wind_df is not None and not ercot_sys_wind_df.empty:
+                    ercot_wind_dates = sorted(ercot_sys_wind_df['deliveryDate'].unique())[:7]
+                    ercot_wind_avgs = []
+                    for date in ercot_wind_dates:
+                        onpeak = ercot_sys_wind_df[(ercot_sys_wind_df['deliveryDate'] == date) &
+                                                    (ercot_sys_wind_df['HE'] >= 7) &
+                                                    (ercot_sys_wind_df['HE'] <= 22)]
+                        ercot_wind_avgs.append(onpeak['value'].mean() if not onpeak.empty else 0)
+                    ercot_wind_min_pk = min(ercot_wind_avgs) if ercot_wind_avgs else 0
+                    ercot_wind_max_pk = max(ercot_wind_avgs) if ercot_wind_avgs else 1
+                    st.markdown("<div style='display: flex; justify-content: space-around; margin-bottom: 5px;'>" +
+                                "".join([f"<div style='text-align: center; flex: 1; font-size: 11px; color: #888888;'>{pd.to_datetime(d).strftime('%a')}</div>" for d in ercot_wind_dates]) +
+                                "</div>", unsafe_allow_html=True)
+                    cols = st.columns(len(ercot_wind_dates))
+                    for idx, date in enumerate(ercot_wind_dates):
+                        date_obj = pd.to_datetime(date)
+                        peak_wind = ercot_wind_avgs[idx]
+                        peak_color = get_color_for_value(peak_wind, ercot_wind_min_pk, ercot_wind_max_pk, reverse=True)
+                        with cols[idx]:
+                            st.markdown(f"""
+                                <div style='text-align: center; padding: 10px 3px; background-color: {peak_color}; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);'>
+                                    <div style='font-size: 13px; font-weight: bold; margin-bottom: 4px; color: #000000;'>{date_obj.strftime('%m/%d')}</div>
+                                    <div style='font-size: 18px; font-weight: bold; color: #000000;'>{peak_wind:,.0f}</div>
+                                </div>
+                            """, unsafe_allow_html=True)
+                    # Delta row for ERCOT system wind
+                    ercot_wind_deltas = []
+                    for idx, date in enumerate(ercot_wind_dates):
+                        cached_value = historical_cache[selected_key]['data'].get('ercot_sys_wind', {}).get(str(date), None)
+                        delta = ercot_wind_avgs[idx] - cached_value if cached_value is not None else None
+                        ercot_wind_deltas.append(delta)
+                    st.markdown("<div style='font-size: 12px; font-weight: bold; margin-top: 5px;'>Delta (Current - Historical):</div>", unsafe_allow_html=True)
+                    cols = st.columns(len(ercot_wind_dates))
+                    for idx, delta in enumerate(ercot_wind_deltas):
+                        with cols[idx]:
+                            if delta is not None:
+                                st.markdown(f"""
+                                    <div style='text-align: center; padding: 5px 3px;'>
+                                        <div style='font-size: 12px; color: #ffffff; font-weight: bold;'>{delta:+,.0f}</div>
+                                    </div>
+                                """, unsafe_allow_html=True)
+                            else:
+                                st.markdown("<div style='text-align: center; padding: 5px 3px; font-size: 12px;'>N/A</div>", unsafe_allow_html=True)
+                else:
+                    st.markdown("<div style='font-size: 12px; color: #888888;'>No ERCOT system wind data available</div>", unsafe_allow_html=True)
+                st.markdown("---")
+
 
                 st.markdown("### Solar")
                 if met_solar_df is not None and not met_solar_df.empty:
@@ -2315,6 +2477,51 @@ def main():
                                 """, unsafe_allow_html=True)
                             else:
                                 st.markdown("<div style='text-align: center; padding: 5px 3px; font-size: 12px;'>N/A</div>", unsafe_allow_html=True)
+
+                # ERCOT 7-Day System Solar Forecast
+                st.markdown("<div style='font-size: 14px; font-weight: bold; color: #888888; margin-top: 10px; margin-bottom: 5px;'>ERCOT 7-Day System Solar Forecast - Peak</div>", unsafe_allow_html=True)
+                if ercot_sys_solar_df is not None and not ercot_sys_solar_df.empty:
+                    ercot_solar_dates = sorted(ercot_sys_solar_df['deliveryDate'].unique())[:7]
+                    ercot_solar_peaks = [float(ercot_sys_solar_df[ercot_sys_solar_df['deliveryDate'] == d]['value'].max())
+                                         for d in ercot_solar_dates]
+                    ercot_solar_min_pk = min(ercot_solar_peaks) if ercot_solar_peaks else 0
+                    ercot_solar_max_pk = max(ercot_solar_peaks) if ercot_solar_peaks else 1
+                    st.markdown("<div style='display: flex; justify-content: space-around; margin-bottom: 5px;'>" +
+                                "".join([f"<div style='text-align: center; flex: 1; font-size: 11px; color: #888888;'>{pd.to_datetime(d).strftime('%a')}</div>" for d in ercot_solar_dates]) +
+                                "</div>", unsafe_allow_html=True)
+                    cols = st.columns(len(ercot_solar_dates))
+                    for idx, date in enumerate(ercot_solar_dates):
+                        date_obj = pd.to_datetime(date)
+                        peak_solar = ercot_solar_peaks[idx]
+                        peak_color = get_color_for_value(peak_solar, ercot_solar_min_pk, ercot_solar_max_pk, reverse=True)
+                        with cols[idx]:
+                            st.markdown(f"""
+                                <div style='text-align: center; padding: 10px 3px; background-color: {peak_color}; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);'>
+                                    <div style='font-size: 13px; font-weight: bold; margin-bottom: 4px; color: #000000;'>{date_obj.strftime('%m/%d')}</div>
+                                    <div style='font-size: 18px; font-weight: bold; color: #000000;'>{peak_solar:,.0f}</div>
+                                </div>
+                            """, unsafe_allow_html=True)
+                    # Delta row for ERCOT system solar
+                    ercot_solar_deltas = []
+                    for idx, date in enumerate(ercot_solar_dates):
+                        cached_value = historical_cache[selected_key]['data'].get('ercot_sys_solar', {}).get(str(date), None)
+                        delta = ercot_solar_peaks[idx] - cached_value if cached_value is not None else None
+                        ercot_solar_deltas.append(delta)
+                    st.markdown("<div style='font-size: 12px; font-weight: bold; margin-top: 5px;'>Delta (Current - Historical):</div>", unsafe_allow_html=True)
+                    cols = st.columns(len(ercot_solar_dates))
+                    for idx, delta in enumerate(ercot_solar_deltas):
+                        with cols[idx]:
+                            if delta is not None:
+                                st.markdown(f"""
+                                    <div style='text-align: center; padding: 5px 3px;'>
+                                        <div style='font-size: 12px; color: #ffffff; font-weight: bold;'>{delta:+,.0f}</div>
+                                    </div>
+                                """, unsafe_allow_html=True)
+                            else:
+                                st.markdown("<div style='text-align: center; padding: 5px 3px; font-size: 12px;'>N/A</div>", unsafe_allow_html=True)
+                else:
+                    st.markdown("<div style='font-size: 12px; color: #888888;'>No ERCOT system solar data available</div>", unsafe_allow_html=True)
+
                 st.markdown("<hr style='border: none; border-top: 3px solid white; margin: 20px 0;'>", unsafe_allow_html=True)
                 st.markdown("### Outages")
                 if outage_df is not None and not outage_df.empty:
