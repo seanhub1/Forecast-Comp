@@ -421,6 +421,60 @@ def fetch_meteologica_data(cache_time):
     return result, cache_time
 
 @st.cache_data(ttl=3600)
+def fetch_meteologica_regional(cache_time):
+    """Fetch Meteologica regional forecasts for wind, solar, and load."""
+    # Meteologica content IDs for regional forecasts (Meteologica hourly model)
+    regional_ids = {
+        'wind': {
+            'Coastal': 1882,
+            'Panhandle': 1883,
+            'SouthHouston': 1878,
+            'WestNorth': 1879,
+            'North': 5220,
+            'South': 5231,
+            'West': 5242,
+        },
+        'solar': {
+            'CenterEast': 4598,
+            'CenterWest': 4596,
+            'FarEast': 4600,
+            'FarWest': 4599,
+            'NorthWest': 4595,
+            'SouthEast': 4597,
+        },
+        'load': {
+            'Coast': 1945,
+            'East': 1944,
+            'FarWest': 1946,
+            'North': 1947,
+            'NorthCentral': 1948,
+            'SouthCentral': 1949,
+            'Southern': 1950,
+            'West': 1951,
+        }
+    }
+    result = {}
+    for category, regions in regional_ids.items():
+        result[category] = {}
+        for region_name, content_id in regions.items():
+            data = get_content_data(content_id)
+            if data:
+                rows = data.get("data", [])
+                if rows:
+                    df = pd.DataFrame(rows)
+                    columns_to_drop = ['To yyyy-mm-dd hh:mm', 'UTC offset from (UTC+/-hhmm)', 'UTC offset to (UTC+/-hhmm)']
+                    df = df.drop(columns=[col for col in columns_to_drop if col in df.columns], errors='ignore')
+                    df = df.rename(columns={'From yyyy-mm-dd hh:mm': 'timestamp', 'forecast': 'value'})
+                    if 'timestamp' in df.columns and 'value' in df.columns:
+                        df['timestamp'] = pd.to_datetime(df['timestamp'])
+                        df['value'] = pd.to_numeric(df['value'], errors='coerce')
+                        df['deliveryDate'] = df['timestamp'].dt.date
+                        df['HE'] = df['timestamp'].dt.hour + 1
+                        df = df.dropna(subset=['value'])
+                        result[category][region_name] = df
+    return result, cache_time
+
+@st.cache_data(ttl=3600)
 def fetch_outage_data(cache_time):
     headers = ercot_token_outages()
     if not headers:
@@ -2059,7 +2113,7 @@ def render_balday_tab(now_ct=None):
 def main():
     st.title("Fundies")
     try:
-        tab1, tab5, tab6, tab3, tab4 = st.tabs(["ERCOT Weekly", "ERCOT Reserves", "Bal-Day Calc", "Gas", "News"])
+        tab1, tab2, tab5, tab6, tab3, tab4 = st.tabs(["ERCOT Weekly", "Forecast Comparison", "ERCOT Reserves", "Bal-Day Calc", "Gas", "News"])
         with st.spinner("Loading forecast data..."):
             cache_time = get_cache_time()
             result = fetch_forecast_data(cache_time)
@@ -2080,6 +2134,9 @@ def main():
 
             ercot_sys_solar_result = fetch_ercot_system_solar_forecast(cache_time)
             ercot_sys_solar_df, _ = ercot_sys_solar_result if ercot_sys_solar_result[0] is not None else (None, cache_time)
+
+            met_regional_result = fetch_meteologica_regional(cache_time)
+            met_regional, _ = met_regional_result
         historical_cache = get_or_update_historical_cache(
             met_load_df, met_wind_df, met_solar_df,
             df, outage_df, ercot_sys_wind_df, ercot_sys_solar_df)
@@ -2753,6 +2810,223 @@ def main():
                 st.markdown("---")
             else:
                 st.warning("No Meteologica load data available")
+
+
+        with tab2:
+            st.header("Forecast Comparison — Meteologica vs ERCOT")
+
+            compare_sub = st.radio("", ["Wind", "Solar", "Load"], horizontal=True, key="compare_sub")
+
+            # Regional mappings: { display_name: (meteo_region_key, ercot_column_name) }
+            wind_region_map = {
+                'System Wide': ('__system__', 'STWPFSystemWide'),
+                'Coastal': ('Coastal', 'STWPFCoastal'),
+                'Panhandle': ('Panhandle', 'STWPFPanhandle'),
+                'South': ('South', 'STWPFSouth'),
+                'West': ('West', 'STWPFWest'),
+                'North': ('North', 'STWPFNorth'),
+            }
+            solar_region_map = {
+                'System Wide': ('__system__', 'STPPFSystemWide'),
+                'CenterWest': ('CenterWest', 'STPPFCenterWest'),
+                'CenterEast': ('CenterEast', 'STPPFCenterEast'),
+                'FarWest': ('FarWest', 'STPPFFarWest'),
+                'FarEast': ('FarEast', 'STPPFFarEast'),
+                'NorthWest': ('NorthWest', 'STPPFNorthWest'),
+                'SouthEast': ('SouthEast', 'STPPFSouthEast'),
+            }
+            load_region_map = {
+                'System Wide': ('__system__', '__system__'),
+                'Coast': ('Coast', None),
+                'East': ('East', None),
+                'FarWest': ('FarWest', None),
+                'North': ('North', None),
+                'NorthCentral': ('NorthCentral', None),
+                'SouthCentral': ('SouthCentral', None),
+                'Southern': ('Southern', None),
+                'West': ('West', None),
+            }
+
+            if compare_sub == "Wind":
+                region_map = wind_region_map
+                ercot_geo_df = wind_regional_df  # NP4-742
+                meteo_sys_df = met_wind_df
+                meteo_regional = met_regional.get('wind', {})
+            elif compare_sub == "Solar":
+                region_map = solar_region_map
+                ercot_geo_df = ercot_sys_solar_df  # NP4-745 (has all geo columns)
+                meteo_sys_df = met_solar_df
+                meteo_regional = met_regional.get('solar', {})
+            else:
+                region_map = load_region_map
+                ercot_geo_df = df  # NP3-565 load forecast
+                meteo_sys_df = met_load_df
+                meteo_regional = met_regional.get('load', {})
+
+            region_names = list(region_map.keys())
+            selected_region = st.selectbox("Region", region_names, key="compare_region")
+            met_key, ercot_col = region_map[selected_region]
+
+            # Get Meteo data for this region
+            if met_key == '__system__':
+                meteo_df = meteo_sys_df
+            else:
+                meteo_df = meteo_regional.get(met_key)
+
+            # Get ERCOT data for this region
+            ercot_hourly = None
+            if compare_sub == "Load":
+                if selected_region == 'System Wide' and df is not None and not df.empty:
+                    ercot_hourly = df[['deliveryDate', 'HE', 'systemTotal']].copy()
+                    ercot_hourly = ercot_hourly.rename(columns={'systemTotal': 'ercot_val'})
+                    ercot_hourly['ercot_val'] = pd.to_numeric(ercot_hourly['ercot_val'], errors='coerce')
+                # Regional ERCOT load not available from NP3-565 in same format — show Meteo only
+            elif ercot_geo_df is not None and not ercot_geo_df.empty and ercot_col and ercot_col in ercot_geo_df.columns:
+                ercot_hourly = ercot_geo_df[['deliveryDate', 'HE', ercot_col]].copy()
+                ercot_hourly = ercot_hourly.rename(columns={ercot_col: 'ercot_val'})
+                ercot_hourly['ercot_val'] = pd.to_numeric(ercot_hourly['ercot_val'], errors='coerce')
+
+            has_meteo = meteo_df is not None and not meteo_df.empty
+            has_ercot = ercot_hourly is not None and not ercot_hourly.empty
+
+            if not has_meteo and not has_ercot:
+                st.warning(f"No data available for {selected_region}")
+            else:
+                # Find common dates
+                meteo_dates = set(meteo_df['deliveryDate'].unique()) if has_meteo else set()
+                ercot_dates = set(ercot_hourly['deliveryDate'].unique()) if has_ercot else set()
+                if has_meteo and has_ercot:
+                    avail_dates = sorted(meteo_dates & ercot_dates)[:7]
+                elif has_meteo:
+                    avail_dates = sorted(meteo_dates)[:7]
+                else:
+                    avail_dates = sorted(ercot_dates)[:7]
+
+                if not avail_dates:
+                    st.warning("No overlapping dates available")
+                else:
+                    date_labels = [pd.to_datetime(d).strftime('%a %m/%d') for d in avail_dates]
+                    selected_label = st.select_slider("Date", options=date_labels, value=date_labels[0], key="compare_date")
+                    selected_date = avail_dates[date_labels.index(selected_label)]
+
+                    # Build hourly merged df
+                    merged = pd.DataFrame({'HE': range(1, 25)})
+                    if has_meteo:
+                        m_day = meteo_df[meteo_df['deliveryDate'] == selected_date][['HE', 'value']].copy()
+                        m_day = m_day.rename(columns={'value': 'Meteo'})
+                        merged = merged.merge(m_day, on='HE', how='left')
+                    else:
+                        merged['Meteo'] = None
+                    if has_ercot:
+                        e_day = ercot_hourly[ercot_hourly['deliveryDate'] == selected_date][['HE', 'ercot_val']].copy()
+                        e_day = e_day.rename(columns={'ercot_val': 'ERCOT'})
+                        merged = merged.merge(e_day, on='HE', how='left')
+                    else:
+                        merged['ERCOT'] = None
+
+                    merged['Meteo'] = pd.to_numeric(merged['Meteo'], errors='coerce')
+                    merged['ERCOT'] = pd.to_numeric(merged['ERCOT'], errors='coerce')
+                    merged['Diff'] = merged['ERCOT'] - merged['Meteo']
+                    merged['HE_label'] = merged['HE'].apply(lambda x: f'HE{int(x):02d}')
+
+                    # --- Overlay chart ---
+                    fig = go.Figure()
+                    if has_meteo:
+                        fig.add_trace(go.Scatter(
+                            x=merged['HE_label'], y=merged['Meteo'],
+                            mode='lines+markers', name='Meteologica',
+                            line=dict(color='#AB47BC', width=2), marker=dict(size=4)
+                        ))
+                    if has_ercot:
+                        fig.add_trace(go.Scatter(
+                            x=merged['HE_label'], y=merged['ERCOT'],
+                            mode='lines+markers', name='ERCOT',
+                            line=dict(color='#42A5F5', width=2), marker=dict(size=4)
+                        ))
+                    fig.update_traces(hovertemplate='%{x}: %{y:,.0f} MW<extra>%{fullData.name}</extra>')
+                    fig.update_layout(
+                        title=f"{compare_sub} — {selected_region} — {selected_label}",
+                        yaxis=dict(title='MW', tickformat=','),
+                        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+                        height=400, hovermode='x unified', margin=dict(t=60, b=40)
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # --- Difference bar chart (only if both sources) ---
+                    if has_meteo and has_ercot:
+                        diff_vals = merged['Diff'].fillna(0)
+                        diff_colors = ['#4CAF50' if v >= 0 else '#FF5252' for v in diff_vals]
+                        fig_diff = go.Figure()
+                        fig_diff.add_trace(go.Bar(
+                            x=merged['HE_label'], y=merged['Diff'],
+                            marker_color=diff_colors,
+                            hovertemplate='%{x}: %{y:+,.0f} MW<extra></extra>'
+                        ))
+                        fig_diff.add_hline(y=0, line_dash="dot", line_color="#666", line_width=1)
+                        fig_diff.update_layout(
+                            title=f"Difference (ERCOT − Meteo)",
+                            yaxis=dict(title='MW', tickformat=','),
+                            height=260, hovermode='x', margin=dict(t=50, b=40), showlegend=False
+                        )
+                        st.plotly_chart(fig_diff, use_container_width=True)
+
+                        # --- Summary metrics ---
+                        valid = merged.dropna(subset=['Meteo', 'ERCOT'])
+                        if not valid.empty:
+                            avg_diff = valid['Diff'].mean()
+                            mae = valid['Diff'].abs().mean()
+                            max_diff = valid['Diff'].max()
+                            min_diff = valid['Diff'].min()
+                            max_he = valid.loc[valid['Diff'].idxmax(), 'HE_label']
+                            min_he = valid.loc[valid['Diff'].idxmin(), 'HE_label']
+                            c1, c2, c3, c4 = st.columns(4)
+                            c1.metric("Avg Diff", f"{avg_diff:+,.0f} MW")
+                            c2.metric("MAE", f"{mae:,.0f} MW")
+                            c3.metric("Max (ERCOT higher)", f"{max_diff:+,.0f} MW", delta=max_he, delta_color="off")
+                            c4.metric("Min (Meteo higher)", f"{min_diff:+,.0f} MW", delta=min_he, delta_color="off")
+                    elif not has_ercot and compare_sub == "Load" and selected_region != 'System Wide':
+                        st.caption("ERCOT regional load forecast not available — showing Meteologica only")
+
+                    # --- 7-Day daily avg overview ---
+                    st.markdown("---")
+                    st.markdown("#### 7-Day Overview")
+                    ov_rows = []
+                    for d in avail_dates:
+                        m_vals = meteo_df[meteo_df['deliveryDate'] == d]['value'] if has_meteo else pd.Series(dtype=float)
+                        m_avg = float(m_vals.mean()) if not m_vals.empty else None
+                        if has_ercot:
+                            e_vals = ercot_hourly[ercot_hourly['deliveryDate'] == d]['ercot_val']
+                            e_avg = float(pd.to_numeric(e_vals, errors='coerce').mean()) if not e_vals.empty else None
+                        else:
+                            e_avg = None
+                        ov_rows.append({
+                            'Date': pd.to_datetime(d).strftime('%a %m/%d'),
+                            'Meteo': m_avg, 'ERCOT': e_avg,
+                            'Diff': (e_avg - m_avg) if (e_avg is not None and m_avg is not None) else None
+                        })
+                    ov_df = pd.DataFrame(ov_rows)
+
+                    fig_ov = go.Figure()
+                    if has_meteo:
+                        fig_ov.add_trace(go.Bar(x=ov_df['Date'], y=ov_df['Meteo'], name='Meteologica', marker_color='#AB47BC', opacity=0.8))
+                    if has_ercot:
+                        fig_ov.add_trace(go.Bar(x=ov_df['Date'], y=ov_df['ERCOT'], name='ERCOT', marker_color='#42A5F5', opacity=0.8))
+                    fig_ov.update_layout(
+                        barmode='group', title=f"Daily Avg — {selected_region}",
+                        yaxis=dict(title='MW', tickformat=','),
+                        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+                        height=320, hovermode='x unified', margin=dict(t=60, b=40)
+                    )
+                    fig_ov.update_traces(hovertemplate='%{x}: %{y:,.0f} MW<extra>%{fullData.name}</extra>')
+                    st.plotly_chart(fig_ov, use_container_width=True)
+
+                    # --- Data table ---
+                    with st.expander(f"Hourly Data — {selected_label}"):
+                        disp = merged[['HE_label', 'Meteo', 'ERCOT', 'Diff']].copy()
+                        disp.columns = ['Hour', 'Meteologica', 'ERCOT', 'Difference']
+                        for c in ['Meteologica', 'ERCOT', 'Difference']:
+                            disp[c] = disp[c].apply(lambda x: f'{x:+,.0f}' if pd.notna(x) and c == 'Difference' else (f'{x:,.0f}' if pd.notna(x) else ''))
+                        st.dataframe(disp, use_container_width=True, hide_index=True)
 
 
         with tab3:
