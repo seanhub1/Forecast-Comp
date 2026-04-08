@@ -32,7 +32,7 @@ def check_password():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if not st.session_state.authenticated:
-        st.title("Goat Farmers Only")
+        st.title("Password")
         with st.form("login_form"):
             password = st.text_input("Password:", type="password", key="password_input")
             submitted = st.form_submit_button("Login", type="primary")
