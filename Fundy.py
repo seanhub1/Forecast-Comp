@@ -2384,7 +2384,7 @@ def main():
                         del st.session_state['wind_region_dialog_active']
 
                 # ERCOT 7-Day System Wind Forecast
-                st.markdown("<div style='font-size: 14px; font-weight: bold; color: #888888; margin-top: 10px; margin-bottom: 5px;'>ERCOT 7-Day System Wind Forecast - Onpeak (HE 7-22)</div>", unsafe_allow_html=True)
+                st.markdown("### ERCOT Wind - Onpeak (HE 7-22)")
                 if ercot_sys_wind_df is not None and not ercot_sys_wind_df.empty:
                     ercot_wind_dates = sorted(ercot_sys_wind_df['deliveryDate'].unique())[:7]
                     ercot_wind_avgs = []
@@ -2429,7 +2429,7 @@ def main():
                     st.markdown("<div style='font-size: 12px; color: #888888;'>No ERCOT system wind data available</div>", unsafe_allow_html=True)
                     with st.expander("Debug: ERCOT Wind API"):
                         st.write("ercot_sys_wind_df is None or empty")
-                st.markdown("---")
+                st.markdown("<hr style='border: none; border-top: 3px solid white; margin: 20px 0;'>", unsafe_allow_html=True)
 
 
                 st.markdown("### Solar")
@@ -2467,7 +2467,7 @@ def main():
                                 st.markdown("<div style='text-align: center; padding: 5px 3px; font-size: 12px;'>N/A</div>", unsafe_allow_html=True)
 
                 # ERCOT 7-Day System Solar Forecast
-                st.markdown("<div style='font-size: 14px; font-weight: bold; color: #888888; margin-top: 10px; margin-bottom: 5px;'>ERCOT 7-Day System Solar Forecast - Peak</div>", unsafe_allow_html=True)
+                st.markdown("### ERCOT Solar - Peak")
                 if ercot_sys_solar_df is not None and not ercot_sys_solar_df.empty:
                     ercot_solar_dates = sorted(ercot_sys_solar_df['deliveryDate'].unique())[:7]
                     ercot_solar_peaks = [float(ercot_sys_solar_df[ercot_sys_solar_df['deliveryDate'] == d]['value'].max())
