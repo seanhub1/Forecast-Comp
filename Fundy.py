@@ -671,7 +671,7 @@ def get_or_update_historical_cache(met_load_df, met_wind_df, met_solar_df, df, o
     snapshot_captured = False
     
    
-    if 16 <= current_hour <= 17:
+    if current_hour == 16:
         he17_captured_date = cache.get('HE17_snapshot', {}).get('captured_date')
         session_key = f"he17_captured_{today}"
         if he17_captured_date != str(today) and session_key not in st.session_state:
@@ -687,7 +687,7 @@ def get_or_update_historical_cache(met_load_df, met_wind_df, met_solar_df, df, o
             st.success(f" Captured HE17 snapshot at {now.strftime('%I:%M %p')} CT")
     
     # HE01 
-    if 0 <= current_hour <= 1:
+    if current_hour == 0:
         he01_captured_date = cache.get('HE01_snapshot', {}).get('captured_date')
         session_key = f"he01_captured_{today}"
         if he01_captured_date != str(today) and session_key not in st.session_state:
