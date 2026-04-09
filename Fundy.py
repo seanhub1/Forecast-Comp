@@ -687,7 +687,7 @@ def get_or_update_historical_cache(met_load_df, met_wind_df, met_solar_df, df, o
             st.success(f" Captured HE17 snapshot at {now.strftime('%I:%M %p')} CT")
     
     # HE01 
-    if current_hour == 0:
+    if 0 <= current_hour <= 1:
         he01_captured_date = cache.get('HE01_snapshot', {}).get('captured_date')
         session_key = f"he01_captured_{today}"
         if he01_captured_date != str(today) and session_key not in st.session_state:
@@ -2144,6 +2144,34 @@ def main():
         raw_cache = load_historical_cache()
         if raw_cache:
             display_cache_status(raw_cache)
+
+        # Debug: show what's actually in the cache
+        with st.sidebar:
+            with st.expander("Snapshot Debug"):
+                if raw_cache:
+                    he17 = raw_cache.get('HE17_snapshot', {})
+                    he01 = raw_cache.get('HE01_snapshot') or raw_cache.get('HE1_snapshot', {})
+                    st.write("**Gist loaded:** Yes")
+                    st.write(f"**HE17 date:** {he17.get('captured_date', 'None')}")
+                    st.write(f"**HE17 keys:** {list(he17.get('data', {}).keys())}")
+                    he17_wind = he17.get('data', {}).get('wind', {})
+                    st.write(f"**HE17 wind dates:** {list(he17_wind.keys())[:3]}..." if he17_wind else "**HE17 wind:** empty")
+                    st.write(f"**HE01 date:** {he01.get('captured_date', 'None')}")
+                    st.write(f"**HE01 keys:** {list(he01.get('data', {}).keys())}")
+                else:
+                    st.write("**Gist loaded:** No — load_historical_cache() returned None")
+                    gist_url = st.secrets.get("gist", {}).get("snapshot_url")
+                    st.write(f"**snapshot_url:** {gist_url}")
+                    st.write(f"**gist id:** {st.secrets.get('gist', {}).get('id')}")
+                    st.write(f"**gist token:** {'set' if st.secrets.get('gist', {}).get('token') else 'missing'}")
+                
+                # Show what historical_cache display_cache looks like
+                st.write("---")
+                st.write("**display_cache (used for deltas):**")
+                for key in ['yesterday_HE17', 'today_HE1']:
+                    hc = historical_cache.get(key, {})
+                    data_keys = list(hc.get('data', {}).keys())
+                    st.write(f"**{key}:** date={hc.get('date')}, keys={data_keys}")
         
         
         
